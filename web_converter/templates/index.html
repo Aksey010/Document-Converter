@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="auto">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Document Converter — конвертер документов с поддержкой PDF, DOCX, TXT, HTML, DJVU и изображений">
+  <meta name="theme-color" content="#3b82f6">
+  <title>Document Converter</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="/static/style.css?v=4">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+  <link rel="manifest" href="/static/manifest.json">
+</head>
+<body>
+  <!-- Theme Toggle -->
+  <button class="theme-toggle" id="themeToggle" aria-label="Переключить тему" title="Тема (Ctrl+Shift+T)">
+    <svg class="icon icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+    </svg>
+    <svg class="icon icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+      <circle cx="12" cy="12" r="5"/>
+      <line x1="12" y1="1" x2="12" y2="3"/>
+      <line x1="12" y1="21" x2="12" y2="23"/>
+      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+      <line x1="1" y1="12" x2="3" y2="12"/>
+      <line x1="21" y1="12" x2="23" y2="12"/>
+      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+    </svg>
+  </button>
+
+  <!-- Toast Container -->
+  <div class="toast-container" id="toastContainer" aria-live="polite" aria-atomic="true"></div>
+
+  <div class="container">
+    <header>
+      <h1>
+        <svg class="header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="16" y1="13" x2="8" y2="13"/>
+          <line x1="16" y1="17" x2="8" y2="17"/>
+          <polyline points="10 9 9 9 8 9"/>
+        </svg>
+        Document Converter
+      </h1>
+      <p class="subtitle">Конвертер документов с поддержкой DJVU, PDF, DOCX, TXT, HTML и изображений</p>
+    </header>
+
+    <main>
+      <!-- Upload Section -->
+      <section class="card upload-section section" aria-labelledby="upload-heading">
+        <h2 id="upload-heading">1. Загрузите файл</h2>
+        <div class="drop-zone" id="dropZone" role="button" tabindex="0" aria-label="Область загрузки файла. Перетащите файл сюда или нажмите для выбора">
+          <input type="file" id="fileInput" accept=".pdf,.docx,.txt,.html,.djvu,.djv,.png,.jpg,.jpeg,.tiff,.bmp,.webp,.gif" hidden aria-hidden="true">
+          <div class="drop-content">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+            </svg>
+            <p class="drop-title">Перетащите файл сюда</p>
+            <p class="drop-subtitle">или <button type="button" id="browseBtn">выберите файл</button></p>
+            <p class="hint">Поддерживаемые форматы: PDF, DOCX, TXT, HTML, DJVU, DJV, PNG, JPG, TIFF, BMP, WEBP, GIF</p>
+            <div class="drop-formats" aria-hidden="true">
+              <span class="format-tag">PDF</span>
+              <span class="format-tag">DOCX</span>
+              <span class="format-tag">TXT</span>
+              <span class="format-tag">HTML</span>
+              <span class="format-tag">DJVU</span>
+              <span class="format-tag">PNG</span>
+              <span class="format-tag">JPG</span>
+              <span class="format-tag">WEBP</span>
+              <span class="format-tag">TIFF</span>
+              <span class="format-tag">BMP</span>
+              <span class="format-tag">GIF</span>
+            </div>
+          </div>
+        </div>
+        <div id="fileInfo" class="file-info hidden" aria-live="polite">
+          <div class="file-details">
+            <svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+            </svg>
+            <div>
+              <span id="fileName" class="file-name"></span>
+              <span id="fileSize" class="file-size"></span>
+            </div>
+          </div>
+          <button type="button" id="removeFile" class="btn-ghost" aria-label="Удалить файл">×</button>
+        </div>
+      </section>
+
+      <!-- Format Selection -->
+      <section class="card format-section hidden section" id="formatSection" aria-labelledby="format-heading">
+        <h2 id="format-heading">2. Выберите формат вывода</h2>
+        <div class="format-grid" id="formatGrid" role="radiogroup" aria-label="Доступные форматы вывода">
+          <!-- Formats will be populated dynamically -->
+        </div>
+      </section>
+
+      <!-- Options Section -->
+      <section class="card options-section hidden section" id="optionsSection" aria-labelledby="options-heading">
+        <h2 id="options-heading">3. Настройки конвертации</h2>
+        <div class="options-grid">
+          <!-- Quality -->
+          <div class="option-group">
+            <label for="quality">Качество / Сжатие <span id="qualityValue" class="option-value">85</span></label>
+            <input type="range" id="quality" min="1" max="100" value="85" aria-label="Качество изображения">
+            <p class="option-hint">Влияет на JPEG, WEBP, DJVU. Выше = лучше качество, больше файл.</p>
+          </div>
+
+          <!-- DPI -->
+          <div class="option-group">
+            <label for="dpi">DPI (разрешение) <span id="dpiValue" class="option-value">150</span></label>
+            <input type="range" id="dpi" min="72" max="600" value="150" step="1" aria-label="DPI разрешение">
+            <p class="option-hint">Критично для PDF→изображения, DJVU. Выше = детальнее, больше файл.</p>
+          </div>
+
+          <!-- Resize Factor -->
+          <div class="option-group">
+            <label for="resize">Масштаб <span id="resizeValue" class="option-value">1.0</span>x</label>
+            <input type="range" id="resize" min="0.1" max="3" value="1" step="0.1" aria-label="Масштаб изображения">
+            <p class="option-hint">Изменение размера изображения. 0.5 = в 2 раза меньше, 2 = в 2 раза больше.</p>
+          </div>
+
+          <!-- PDF Compression -->
+          <div class="option-group">
+            <label for="pdfCompression">Сжатие PDF</label>
+            <select id="pdfCompression" aria-label="Уровень сжатия PDF">
+              <option value="low">Низкое (быстрее, больше файл)</option>
+              <option value="medium" selected>Среднее</option>
+              <option value="high">Высокое (медленнее, меньше файл)</option>
+            </select>
+          </div>
+
+          <!-- DJVU Quality -->
+          <div class="option-group">
+            <label for="djvuQuality">Качество DJVU <span id="djvuQualityValue" class="option-value">50</span></label>
+            <input type="range" id="djvuQuality" min="0" max="100" value="50" aria-label="Качество DJVU">
+            <p class="option-hint">Только для конвертации в DJVU.</p>
+          </div>
+
+          <!-- Page Range -->
+          <div class="option-group">
+            <label for="pageRange">Диапазон страниц</label>
+            <input type="text" id="pageRange" placeholder="Напр.: 1-5 или 1,3,5" aria-label="Диапазон страниц">
+            <p class="option-hint">Для многостраничных документов (PDF, DJVU, TIFF).</p>
+          </div>
+
+          <!-- Checkboxes -->
+          <div class="option-group checkbox-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="grayscale" aria-label="Черно-белый режим">
+              <span>Черно-белый (grayscale)</span>
+            </label>
+            <p class="option-hint">Уменьшает размер файла в 2-3 раза.</p>
+          </div>
+
+          <div class="option-group checkbox-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="stripMetadata" checked aria-label="Удалить метаданные">
+              <span>Удалить метаданные</span>
+            </label>
+            <p class="option-hint">Удаляет EXIF, XMP и другие метаданные.</p>
+          </div>
+        </div>
+
+        <!-- Size Estimate -->
+        <div class="estimate-box" id="estimateBox" hidden aria-live="polite">
+          <h3>📊 Прогноз размера</h3>
+          <div class="estimate-grid">
+            <div class="estimate-item">
+              <span class="estimate-label">Исходный размер</span>
+              <span id="estimateInputSize" class="estimate-value">—</span>
+            </div>
+            <div class="estimate-item">
+              <span class="estimate-label">Ожидаемый размер</span>
+              <span id="estimateOutputSize" class="estimate-value">—</span>
+            </div>
+            <div class="estimate-item">
+              <span class="estimate-label">Коэффициент сжатия</span>
+              <span id="estimateRatio" class="estimate-value">—</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Convert Button -->
+      <section class="card convert-section hidden section" id="convertSection" aria-labelledby="convert-heading">
+        <h2 id="convert-heading" class="visually-hidden">Конвертация</h2>
+        <button type="button" id="convertBtn" class="btn btn-primary btn-large" disabled aria-describedby="convert-hint">
+          <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M7 16h10M7 12h10M7 8h10M7 4h10"/>
+          </svg>
+          <span class="btn-text">Конвертировать</span>
+        </button>
+        <p id="convert-hint" class="visually-hidden">Выберите формат вывода для активации кнопки</p>
+        <div id="progress" class="progress hidden" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Прогресс конвертации">
+          <div class="progress-bar indeterminate" id="progressBar"></div>
+          <span id="progressText">Подготовка...</span>
+        </div>
+      </section>
+
+      <!-- Result Section -->
+      <section class="card result-section hidden section" id="resultSection" aria-labelledby="result-heading">
+        <h2 id="result-heading">✅ Готово!</h2>
+        <div class="result-info">
+          <div class="result-item">
+            <span class="result-label">Формат</span>
+            <span id="resultFormat" class="result-value"></span>
+          </div>
+          <div class="result-item">
+            <span class="result-label">Было</span>
+            <span id="resultInputSize" class="result-value"></span>
+          </div>
+          <div class="result-item">
+            <span class="result-label">Стало</span>
+            <span id="resultOutputSize" class="result-value"></span>
+          </div>
+          <div class="result-item">
+            <span class="result-label">Сжатие</span>
+            <span id="resultRatio" class="result-value"></span>
+          </div>
+        </div>
+        <div class="result-actions">
+          <button type="button" id="downloadBtn" class="btn btn-primary btn-large">
+            <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+            </svg>
+            <span>Скачать файл</span>
+          </button>
+          <button type="button" id="convertAnotherBtn" class="btn btn-secondary btn-large">Конвертировать другой файл</button>
+        </div>
+      </section>
+
+      <!-- Error Section -->
+      <section class="card error-section hidden section" id="errorSection" aria-labelledby="error-heading" role="alert">
+        <h2 id="error-heading">❌ Ошибка</h2>
+        <p id="errorMessage"></p>
+        <button type="button" id="retryBtn" class="btn btn-secondary">Попробовать снова</button>
+      </section>
+    </main>
+
+    <footer>
+      <p>Document Converter v1.0 | Поддерживает PDF, DOCX, TXT, HTML, DJVU, изображения</p>
+    </footer>
+  </div>
+
+  <script src="/static/app.js?v=4"></script>
+</body>
+</html>

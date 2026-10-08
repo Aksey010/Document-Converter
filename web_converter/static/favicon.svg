@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#3b82f6;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#60a5fa;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <!-- Document shape -->
+  <rect x="18" y="14" width="64" height="72" rx="6" fill="url(#grad)" />
+  <rect x="18" y="14" width="64" height="24" rx="6" fill="#1e3a5f" />
+  <!-- Fold corner -->
+  <path d="M60 14 L82 14 L60 36 Z" fill="#1e40a0" />
+  <!-- Lines representing text -->
+  <g stroke="#ffffff" stroke-width="3" stroke-linecap="round" opacity="0.9">
+    <line x1="28" y1="22" x2="72" y2="22" />
+  </g>
+  <!-- Conversion arrows -->
+  <g stroke="#ffffff" stroke-width="4" stroke-linecap="round" fill="none" opacity="0.95">
+    <path d="M30 50 L50 50 M50 50 L42 42 M50 50 L42 58" />
+    <path d="M50 62 L70 62 M70 62 L62 54 M70 62 L62 70" />
+  </g>
+  <!-- File type indicators -->
+  <g font-size="10" fill="#ffffff" font-weight="bold" font-family="system-ui, sans-serif">
+    <text x="30" y="78" text-anchor="middle">PDF</text>
+    <text x="70" y="78" text-anchor="middle">DOCX</text>
+  </g>
+</svg>

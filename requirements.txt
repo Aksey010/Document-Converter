@@ -1,0 +1,38 @@
+# Document Converter Dependencies
+# Core web framework
+aiohttp==3.11.18
+aiohttp-jinja2==1.6
+jinja2==3.1.4
+
+# Document processing
+pymupdf==1.24.7           # PDF handling (fitz)
+pdf2image==1.17.0         # PDF to images (requires poppler)
+python-docx==1.1.0        # DOCX handling
+docx2pdf==0.1.8           # DOCX to PDF (Windows, requires Word/LO)
+
+# Image processing
+Pillow==10.3.0            # Image manipulation
+
+# DJVU support (requires system djvulibre installed)
+# No direct Python package - uses ddjvu command line tool
+
+# OCR support (optional)
+pytesseract==0.3.10       # OCR for images/DJVU (requires tesseract-ocr)
+
+# HTML processing
+beautifulsoup4==4.12.3    # HTML parsing
+html2docx==1.1.0          # HTML to DOCX
+mammoth==1.9.0            # DOCX to HTML
+
+# Utilities
+orjson==3.10.18           # Fast JSON
+python-dotenv==1.1.0      # Environment variables
+loguru==0.7.1             # Logging
+
+# Dev dependencies (optional)
+# ruff==0.4.0             # Fast linter
+# black==24.3.0           # Code formatter
+# isort==5.13.0           # Import sorter
+# mypy==1.9.0             # Type checker
+# pytest==8.1.0           # Testing
+# pytest-asyncio==0.23.0  # Async testing
