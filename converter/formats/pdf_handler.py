@@ -2,6 +2,8 @@
 
 import os
 import tempfile
+import zipfile
+from pathlib import Path
 from typing import Optional, List
 from .base import BaseHandler
 from ..core import ConversionOptions
@@ -78,7 +80,12 @@ class PDFHandler(BaseHandler):
         output_format: str,
         options: ConversionOptions
     ) -> Optional[str]:
-        """Convert PDF pages to images."""
+        """Convert PDF pages to images.
+
+        Renders ALL pages in the (optional) page range. A single page is
+        saved as a plain image file; when multiple pages are rendered, the
+        result is a ZIP archive containing one image file per page.
+        """
         pdf2image = self._get_pdf2image()
         pillow = self._get_pillow()
         
@@ -87,13 +94,15 @@ class PDFHandler(BaseHandler):
         
         # Parse page range
         page_range = self._parse_page_range(options.page_range)
+        first_page = page_range[0] if page_range else None
+        last_page = page_range[1] if page_range else None
         
         # Convert PDF to images - process page by page to save memory
         images = pdf2image(
             input_path,
             dpi=options.dpi,
-            first_page=page_range[0] if page_range else None,
-            last_page=page_range[1] if page_range else None,
+            first_page=first_page,
+            last_page=last_page,
             fmt=output_format if output_format != 'jpg' else 'jpeg'
         )
         
@@ -101,26 +110,28 @@ class PDFHandler(BaseHandler):
             return None
         
         try:
-            # If single page or output format doesn't support multi-page, save first page
-            if len(images) == 1 or output_format in ('jpeg', 'jpg', 'png', 'bmp', 'webp'):
-                img = images[0]
-                img = self._apply_image_options(img, options)
-                self._save_image(img, output_path, output_format, options)
-            else:
-                # For multi-page formats like TIFF, save all pages
-                if output_format == 'tiff':
-                    processed_images = [self._apply_image_options(img, options) for img in images]
-                    processed_images[0].save(
-                        output_path,
-                        format='TIFF',
-                        save_all=True,
-                        append_images=processed_images[1:],
-                        compression='tiff_lzw'
-                    )
-                else:
-                    # Default: save first page
-                    img = self._apply_image_options(images[0], options)
-                    self._save_image(img, output_path, output_format, options)
+            processed_images = [self._apply_image_options(img, options) for img in images]
+            
+            if len(processed_images) == 1:
+                # Single page: plain image file, no archive needed
+                self._save_image(processed_images[0], output_path, output_format, options)
+                return output_path
+            
+            # Multiple pages: save every page and package into a ZIP archive
+            zip_path = Path(output_path).with_suffix('.zip')
+            stem = Path(output_path).stem
+            doc_stem = stem[:-len('_converted')] if stem.endswith('_converted') else stem
+            
+            with tempfile.TemporaryDirectory(prefix="doc_converter_pages_") as tmp_dir:
+                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    for offset, img in enumerate(processed_images):
+                        page_number = (first_page or 1) + offset
+                        page_name = f"{doc_stem}_page_{page_number:03d}.{output_format}"
+                        page_path = Path(tmp_dir) / page_name
+                        self._save_image(img, str(page_path), output_format, options)
+                        zf.write(page_path, page_name)
+            
+            return str(zip_path)
         finally:
             # Explicitly close images to free memory
             for img in images:
@@ -128,8 +139,6 @@ class PDFHandler(BaseHandler):
                     img.close()
                 except Exception:
                     pass
-        
-        return output_path
     
     def _convert_pdf_to_text(self, input_path: str, output_path: str, options: ConversionOptions) -> Optional[str]:
         """Extract text from PDF."""
@@ -241,16 +250,33 @@ class PDFHandler(BaseHandler):
         start = page_range[0] - 1 if page_range else 0
         end = page_range[1] if page_range else len(doc)
         
+        has_text = False
+        has_images = False
         try:
             for i in range(start, min(end, len(doc))):
                 page = doc[i]
                 text = page.get_text()
                 if text.strip():
+                    has_text = True
                     docx_doc.add_paragraph(text)
+                elif page.get_images():
+                    has_images = True
                 if i < min(end, len(doc)) - 1:
                     docx_doc.add_page_break()
         finally:
             doc.close()
+        
+        if not has_text:
+            if has_images:
+                raise RuntimeError(
+                    "PDF appears to be scanned or image-based with no extractable text. "
+                    "DOCX conversion is not possible without OCR. "
+                    "Consider converting to images first, then using OCR."
+                )
+            raise RuntimeError(
+                "No text could be extracted from the PDF. "
+                "The PDF may be empty, password-protected, or contain only vector graphics."
+            )
         
         docx_doc.save(output_path)
         return output_path

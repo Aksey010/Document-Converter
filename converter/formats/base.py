@@ -53,7 +53,9 @@ class BaseHandler(ABC):
                 int(image.width * options.resize_factor),
                 int(image.height * options.resize_factor)
             )
-            image = image.resize(new_size, pillow.Image.Resampling.LANCZOS)
+            # Access Resampling from PIL.Image
+            from PIL import Image as PILImage
+            image = image.resize(new_size, PILImage.Resampling.LANCZOS)
         
         # Grayscale
         if options.grayscale and image.mode != 'L':

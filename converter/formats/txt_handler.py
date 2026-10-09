@@ -142,8 +142,10 @@ class TXTHandler(BaseHandler):
         
         # Try to get ImageDraw and ImageFont
         try:
-            ImageDraw = __import__('PIL.ImageDraw', fromlist=['ImageDraw']).ImageDraw
-            ImageFont = __import__('PIL.ImageFont', fromlist=['ImageFont']).ImageFont
+            from PIL import ImageDraw as PILImageDraw
+            from PIL import ImageFont as PILImageFont
+            ImageDraw = PILImageDraw
+            ImageFont = PILImageFont
         except ImportError:
             raise RuntimeError("PIL.ImageDraw or PIL.ImageFont not available")
         

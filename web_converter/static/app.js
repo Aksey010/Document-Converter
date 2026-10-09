@@ -3,6 +3,7 @@
 class DocumentConverter {
   constructor() {
     this.file = null;
+    this.files = [];
     this.inputFormat = null;
     this.outputFormat = null;
     this.formats = [];
@@ -26,6 +27,20 @@ class DocumentConverter {
     this.fileName = document.getElementById('fileName');
     this.fileSize = document.getElementById('fileSize');
     this.removeFileBtn = document.getElementById('removeFile');
+
+    // Multi-file elements
+    this.fileListWrap = document.getElementById('fileListWrap');
+    this.fileList = document.getElementById('fileList');
+    this.fileListCount = document.getElementById('fileListCount');
+    this.fileListTotal = document.getElementById('fileListTotal');
+    this.clearFilesBtn = document.getElementById('clearFilesBtn');
+    this.mergeControls = document.getElementById('mergeControls');
+    this.mergeToPdf = document.getElementById('mergeToPdf');
+    this.noCommonFormat = document.getElementById('noCommonFormat');
+    this.resultFiles = document.getElementById('resultFiles');
+
+    // Cache the original drop zone content so it can be restored
+    this._dropContentHtml = this.dropZone.querySelector('.drop-content').innerHTML;
 
     this.formatSection = document.getElementById('formatSection');
     this.formatGrid = document.getElementById('formatGrid');
@@ -75,7 +90,7 @@ class DocumentConverter {
     });
 
     this.fileInput.addEventListener('change', (e) => {
-      if (e.target.files.length) this.handleFile(e.target.files[0]);
+      if (e.target.files.length) this.addFiles(e.target.files);
     });
 
     // Drag and drop
@@ -92,7 +107,7 @@ class DocumentConverter {
     this.dropZone.addEventListener('drop', (e) => {
       e.preventDefault();
       this.dropZone.classList.remove('drag-over');
-      if (e.dataTransfer.files.length) this.handleFile(e.dataTransfer.files[0]);
+      if (e.dataTransfer.files.length) this.addFiles(e.dataTransfer.files);
     });
 
     this.dropZone.addEventListener('click', () => this.fileInput.click());
@@ -104,6 +119,12 @@ class DocumentConverter {
     });
 
     this.removeFileBtn.addEventListener('click', () => this.resetFile());
+    this.clearFilesBtn.addEventListener('click', () => this.resetFile());
+
+    // Merge toggle (multi-file mode)
+    this.mergeToPdf.addEventListener('change', () => {
+      if (this.files.length >= 2) this.refreshFileUI();
+    });
 
     // Option changes -> update estimate
     const optionInputs = [
@@ -210,11 +231,11 @@ class DocumentConverter {
         e.preventDefault();
         this.convert();
       }
-      // Escape = Clear file / close error
+      // Escape = Clear files / close error
       if (e.key === 'Escape') {
         if (!this.errorSection.classList.contains('hidden')) {
           this.hideError();
-        } else if (this.file) {
+        } else if (this.files.length) {
           this.resetFile();
         }
       }
@@ -239,21 +260,100 @@ class DocumentConverter {
     }
   }
 
-  // --- File Handling ---
-  handleFile(file) {
-    const ext = file.name.split('.').pop().toLowerCase();
-    if (!this.formats.includes(ext)) {
-      this.showToast('error', `Неподдерживаемый формат: .${ext}`);
+  // --- File Handling (multi-file) ---
+  addFiles(fileList) {
+    const incoming = Array.from(fileList);
+    let added = 0;
+
+    incoming.forEach(f => {
+      const ext = f.name.split('.').pop().toLowerCase();
+      if (!this.formats.includes(ext)) {
+        this.showToast('error', `Неподдерживаемый формат: ${f.name}`);
+        return;
+      }
+      this.files.push(f);
+      added++;
+    });
+
+    // Reset input so the same file(s) can be picked again later
+    this.fileInput.value = '';
+
+    if (added) {
+      this.showToast('success', added === 1
+        ? `Файл добавлен (всего: ${this.files.length})`
+        : `Добавлено файлов: ${added} (всего: ${this.files.length})`);
+    }
+    this.refreshFileUI();
+  }
+
+  refreshFileUI() {
+    const n = this.files.length;
+
+    if (n === 0) {
+      this.file = null;
+      this.inputFormat = null;
+      this.outputFormat = null;
+      this._restoreDropContent();
+      this.dropZone.classList.remove('has-file');
+      this.fileListWrap.classList.add('hidden');
+      this.fileInfo.classList.add('hidden');
+      this.mergeControls.classList.add('hidden');
+      this.noCommonFormat.classList.add('hidden');
+      this.hideAllSections();
+      this.convertBtn.disabled = true;
+      this.convertBtnText.textContent = 'Конвертировать';
+      this.downloadBtn.classList.remove('hidden');
+      this.resultFiles.classList.add('hidden');
+      this.resultFiles.innerHTML = '';
+      this.estimateBox.classList.add('hidden');
       return;
     }
 
-    this.file = file;
-    this.inputFormat = ext;
+    if (n === 1) {
+      this.file = this.files[0];
+      this.inputFormat = this.file.name.split('.').pop().toLowerCase();
+      this.fileListWrap.classList.add('hidden');
+      this.mergeControls.classList.add('hidden');
+      this.noCommonFormat.classList.add('hidden');
+      this._renderSingleFileUI();
+      this.renderFormats();
+      this.formatSection.classList.remove('hidden');
+      this.optionsSection.classList.remove('hidden');
+      this.convertBtnText.textContent = 'Конвертировать';
+      this.showPreliminaryEstimate();
+      return;
+    }
 
-    // Update UI - show file info in drop zone instead of hiding content
+    // Multi-file mode (2+)
+    this.file = null;
+    this.inputFormat = null;
+    this.outputFormat = null;
+    this._restoreDropContent();
+    this.dropZone.classList.remove('has-file');
+    this.fileInfo.classList.add('hidden');
+
+    this.renderFileList();
+    this.fileListWrap.classList.remove('hidden');
+    this.renderMultiFormats();
+    this.formatSection.classList.remove('hidden');
+    this.estimateBox.classList.add('hidden');
+  }
+
+  _restoreDropContent() {
+    const dropContent = this.dropZone.querySelector('.drop-content');
+    dropContent.innerHTML = this._dropContentHtml;
+    // Re-bind browse button (innerHTML replaced the node)
+    this.browseBtn = dropContent.querySelector('#browseBtn');
+    this.browseBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.fileInput.click();
+    });
+  }
+
+  _renderSingleFileUI() {
+    const file = this.file;
     this.dropZone.classList.add('has-file');
-    
-    // Update drop zone content to show file info
+
     const dropContent = this.dropZone.querySelector('.drop-content');
     dropContent.innerHTML = `
       <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
@@ -261,33 +361,118 @@ class DocumentConverter {
         <polyline points="14 2 14 8 20 8"/>
       </svg>
       <p class="drop-title">Файл готов к конвертации</p>
-      <p class="drop-subtitle">${file.name} <span class="file-size-badge">${this.formatSize(file.size)}</span></p>
+      <p class="drop-subtitle">${this.escapeHtml(file.name)} <span class="file-size-badge">${this.formatSize(file.size)}</span></p>
       <p class="hint">Выберите формат вывода ниже</p>
       <button type="button" class="btn-change-file" aria-label="Выбрать другой файл">Выбрать другой файл</button>
     `;
-    
-    // Bind change file button
+
     dropContent.querySelector('.btn-change-file').addEventListener('click', (e) => {
       e.stopPropagation();
       this.resetFile();
     });
 
-    this.fileInfo.classList.add('hidden'); // Hide separate file info since it's in drop zone now
+    this.fileInfo.classList.add('hidden');
+  }
 
-    // Show format section
-    this.renderFormats();
-    this.formatSection.classList.remove('hidden');
-    this.optionsSection.classList.remove('hidden');
+  renderFileList() {
+    const totalSize = this.files.reduce((s, f) => s + f.size, 0);
+    this.fileListCount.textContent = `Файлов: ${this.files.length}`;
+    this.fileListTotal.textContent = this.formatSize(totalSize);
 
-    // Show preliminary estimate immediately (using first available format)
-    this.showPreliminaryEstimate();
+    this.fileList.innerHTML = this.files.map((f, i) => `
+      <li class="file-row" data-index="${i}">
+        <span class="file-index">${i + 1}</span>
+        <span class="file-row-name" title="${this.escapeHtml(f.name)}">${this.escapeHtml(f.name)}</span>
+        <span class="file-row-size">${this.formatSize(f.size)}</span>
+        <span class="file-row-actions">
+          <button type="button" class="row-btn" data-action="up" data-index="${i}" aria-label="Переместить выше" ${i === 0 ? 'disabled' : ''}>↑</button>
+          <button type="button" class="row-btn" data-action="down" data-index="${i}" aria-label="Переместить ниже" ${i === this.files.length - 1 ? 'disabled' : ''}>↓</button>
+          <button type="button" class="row-btn row-remove" data-action="remove" data-index="${i}" aria-label="Удалить из списка">×</button>
+        </span>
+      </li>
+    `).join('');
 
-    this.showToast('success', `Файл "${file.name}" загружен`);
+    this.fileList.querySelectorAll('.row-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const i = parseInt(btn.dataset.index, 10);
+        const action = btn.dataset.action;
+        if (action === 'up' && i > 0) {
+          [this.files[i - 1], this.files[i]] = [this.files[i], this.files[i - 1]];
+        } else if (action === 'down' && i < this.files.length - 1) {
+          [this.files[i + 1], this.files[i]] = [this.files[i], this.files[i + 1]];
+        } else if (action === 'remove') {
+          this.files.splice(i, 1);
+        }
+        this.refreshFileUI();
+      });
+    });
+  }
+
+  computeCommonFormats() {
+    let common = null;
+    for (const f of this.files) {
+      const ext = f.name.split('.').pop().toLowerCase();
+      const outputs = this.compatibility[ext] || [];
+      common = common === null ? [...outputs] : common.filter(x => outputs.includes(x));
+      if (common.length === 0) break;
+    }
+    return common || [];
+  }
+
+  allMergeable() {
+    return this.files.length >= 2 && this.files.every(f => {
+      const ext = f.name.split('.').pop().toLowerCase();
+      return (this.compatibility[ext] || []).includes('pdf');
+    });
+  }
+
+  pluralFiles(n) {
+    const mod10 = n % 10;
+    const mod100 = n % 100;
+    if (mod10 === 1 && mod100 !== 11) return 'файл';
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'файла';
+    return 'файлов';
+  }
+
+  renderMultiFormats() {
+    const common = this.computeCommonFormats();
+    const mergeable = this.allMergeable();
+    const mergeOn = mergeable && this.mergeToPdf.checked;
+
+    this.mergeControls.classList.toggle('hidden', !mergeable);
+    this.noCommonFormat.classList.toggle('hidden', common.length > 0 || mergeOn);
+
+    if (mergeOn) {
+      // Merge mode: output is always a single PDF
+      this.outputFormat = 'pdf';
+      this.formatGrid.innerHTML = '';
+      this.optionsSection.classList.remove('hidden');
+      this.convertSection.classList.remove('hidden');
+      this.convertBtn.disabled = false;
+      this.convertBtnText.textContent = `Объединить ${this.files.length} ${this.pluralFiles(this.files.length)} в PDF`;
+      this.updateOptionsVisibility();
+      this.estimateBox.classList.add('hidden');
+      return;
+    }
+
+    if (common.length === 0) {
+      this.outputFormat = null;
+      this.formatGrid.innerHTML = '';
+      this.convertSection.classList.add('hidden');
+      this.convertBtn.disabled = true;
+      this.convertBtnText.textContent = 'Конвертировать';
+      return;
+    }
+
+    // Batch mode: common output formats for all files
+    this.renderFormatsList(common);
+    this.convertBtnText.textContent = `Конвертировать ${this.files.length} ${this.pluralFiles(this.files.length)}`;
   }
 
   // Show preliminary estimate right after file upload (before format selection)
   async showPreliminaryEstimate() {
-    if (!this.file) return;
+    if (!this.file || this.files.length !== 1) return;
     
     const outputFormats = this.compatibility[this.inputFormat] || [];
     if (outputFormats.length === 0) return;
@@ -328,8 +513,10 @@ class DocumentConverter {
   }
 
   renderFormats() {
-    const outputFormats = this.compatibility[this.inputFormat] || [];
+    this.renderFormatsList(this.compatibility[this.inputFormat] || []);
+  }
 
+  renderFormatsList(outputFormats) {
     // Format icons (inline SVG)
     const icons = {
       pdf: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><text x="8" y="16" font-size="6" fill="currentColor">PDF</text></svg>',
@@ -420,7 +607,7 @@ class DocumentConverter {
 
   // --- Estimation ---
   async updateEstimate() {
-    if (!this.file || !this.outputFormat) {
+    if (!this.file || !this.outputFormat || this.files.length !== 1) {
       this.estimateBox.classList.add('hidden');
       return;
     }
@@ -477,6 +664,14 @@ class DocumentConverter {
 
   // --- Conversion ---
   async convert() {
+    // Multi-file mode: merge to PDF or batch conversion
+    if (this.files.length >= 2) {
+      if (this.allMergeable() && this.mergeToPdf.checked) {
+        return this.convertMerge();
+      }
+      return this.convertBatch();
+    }
+
     if (!this.file || !this.outputFormat) return;
 
     this.hideAllSections();
@@ -512,8 +707,54 @@ class DocumentConverter {
     }
   }
 
-  // Upload file and get task_id
-  uploadFile(formData) {
+  // Multi-file: merge all files into one PDF
+  async convertMerge() {
+    const formData = new FormData();
+    this.files.forEach(f => formData.append('files', f, f.name));
+    formData.append('options', JSON.stringify(this.getOptions()));
+    return this.runOperation(formData, '/api/merge');
+  }
+
+  // Multi-file: convert each file independently
+  async convertBatch() {
+    if (!this.outputFormat) {
+      this.showToast('warning', 'Нет общего формата вывода для всех файлов');
+      return;
+    }
+
+    const formData = new FormData();
+    this.files.forEach(f => formData.append('files', f, f.name));
+    formData.append('output_format', this.outputFormat);
+    formData.append('options', JSON.stringify(this.getOptions()));
+    return this.runOperation(formData, '/api/batch');
+  }
+
+  // Shared upload + SSE progress flow for merge/batch operations
+  async runOperation(formData, endpoint) {
+    this.hideAllSections();
+    this.progress.classList.remove('hidden');
+    this.progress.classList.add('indeterminate');
+    this.convertBtn.disabled = true;
+    this.convertBtn.classList.add('loading');
+    this.progressText.textContent = 'Загрузка файлов...';
+    this.progressBar.style.width = '0%';
+
+    try {
+      const taskId = await this.uploadFile(formData, endpoint);
+      if (!taskId) return;
+      await this.trackProgress(taskId);
+    } catch (e) {
+      this.progress.classList.add('hidden');
+      this.progress.classList.remove('indeterminate');
+      this.convertBtn.classList.remove('loading');
+      this.convertBtn.disabled = false;
+      this.showError('Ошибка сети: ' + e.message);
+      this.showToast('error', 'Ошибка сети: ' + e.message);
+    }
+  }
+
+  // Upload files and get task_id
+  uploadFile(formData, endpoint = '/api/convert') {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
 
@@ -558,7 +799,7 @@ class DocumentConverter {
       xhr.addEventListener('error', () => reject(new Error('Ошибка сети')));
       xhr.addEventListener('abort', () => reject(new Error('Прервано')));
 
-      xhr.open('POST', '/api/convert');
+      xhr.open('POST', endpoint);
       xhr.send(formData);
     });
   }
@@ -619,7 +860,50 @@ class DocumentConverter {
 
   showResult(data) {
     this.resultSection.classList.remove('hidden');
+    this.resultFiles.innerHTML = '';
+    this.resultFiles.classList.add('hidden');
+    this.downloadBtn.classList.remove('hidden');
+    this.downloadUrl = null;
 
+    if (data.files) {
+      // Batch conversion result: per-file links + optional ZIP of all
+      this.resultFormat.textContent = `${(data.format || '').toUpperCase()} × ${data.converted}`;
+      this.resultInputSize.textContent = `${data.total} ${this.pluralFiles(data.total)}`;
+      this.resultOutputSize.textContent = `успешно: ${data.converted}, с ошибками: ${data.failed}`;
+      this.resultRatio.textContent = '—';
+      this.downloadBtn.classList.add('hidden');
+
+      const rows = data.files.map(r => r.success
+        ? `<li class="result-file success">
+             <a href="${r.download_url}" download>${this.escapeHtml(r.filename)}</a>
+             <span class="result-file-size">${this.formatSize(r.output_size)}</span>
+           </li>`
+        : `<li class="result-file failed">
+             <span>${this.escapeHtml(r.filename)}</span>
+             <span class="result-error">${this.escapeHtml(r.error || 'Ошибка')}</span>
+           </li>`
+      ).join('');
+
+      const zipRow = data.batch_zip_url
+        ? `<li class="result-file zip"><a href="${data.batch_zip_url}" download>📦 Скачать все успешные (${data.converted}) одним архивом ZIP</a></li>`
+        : '';
+
+      this.resultFiles.innerHTML = `<ul class="result-files-list">${rows}${zipRow}</ul>`;
+      this.resultFiles.classList.remove('hidden');
+      return;
+    }
+
+    if (data.merged_count) {
+      // Merge result: single merged PDF
+      this.resultFormat.textContent = 'PDF (объединённый)';
+      this.resultInputSize.textContent = this.formatSize(data.input_size);
+      this.resultOutputSize.textContent = this.formatSize(data.output_size);
+      this.resultRatio.textContent = `${data.pages} стр. из ${data.merged_count} ${this.pluralFiles(data.merged_count)}`;
+      this.downloadUrl = data.download_url;
+      return;
+    }
+
+    // Single-file result
     this.resultFormat.textContent = data.format.toUpperCase();
     this.resultInputSize.textContent = this.formatSize(data.input_size);
     this.resultOutputSize.textContent = this.formatSize(data.output_size);
@@ -657,14 +941,24 @@ class DocumentConverter {
   // --- Reset ---
   resetFile() {
     this.file = null;
+    this.files = [];
     this.inputFormat = null;
     this.outputFormat = null;
     this.fileInput.value = '';
     this.dropZone.classList.remove('has-file');
-    this.dropZone.querySelector('.drop-content').style.display = 'block';
+    this._restoreDropContent();
+    this.dropZone.querySelector('.drop-content').style.display = '';
     this.fileInfo.classList.add('hidden');
+    this.fileListWrap.classList.add('hidden');
+    this.mergeControls.classList.add('hidden');
+    this.noCommonFormat.classList.add('hidden');
+    this.resultFiles.classList.add('hidden');
+    this.resultFiles.innerHTML = '';
+    this.downloadBtn.classList.remove('hidden');
+    this.mergeToPdf.checked = true;
     this.hideAllSections();
     this.convertBtn.disabled = true;
+    this.convertBtnText.textContent = 'Конвертировать';
     this.estimateBox.classList.add('hidden');
   }
 

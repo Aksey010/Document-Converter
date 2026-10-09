@@ -82,10 +82,15 @@ class HTMLHandler(BaseHandler):
         """Convert HTML to DOCX using html2docx or fallback."""
         html2docx = self._get_html2docx()
         
-        # Try html2docx
+        # Try html2docx (API: html2docx(html_content: str, title: str) -> BytesIO)
         if html2docx:
             try:
-                html2docx(input_path, output_path)
+                with open(input_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    html_content = f.read()
+                title = os.path.splitext(os.path.basename(input_path))[0]
+                buffer = html2docx(html_content, title)
+                with open(output_path, 'wb') as f:
+                    f.write(buffer.getvalue())
                 return output_path
             except Exception:
                 # html2docx may fail on complex HTML

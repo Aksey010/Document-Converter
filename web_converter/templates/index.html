@@ -8,7 +8,7 @@
   <title>Document Converter</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="/static/style.css?v=4">
+  <link rel="stylesheet" href="/static/style.css?v=5">
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
   <link rel="manifest" href="/static/manifest.json">
@@ -53,16 +53,16 @@
     <main>
       <!-- Upload Section -->
       <section class="card upload-section section" aria-labelledby="upload-heading">
-        <h2 id="upload-heading">1. Загрузите файл</h2>
-        <div class="drop-zone" id="dropZone" role="button" tabindex="0" aria-label="Область загрузки файла. Перетащите файл сюда или нажмите для выбора">
-          <input type="file" id="fileInput" accept=".pdf,.docx,.txt,.html,.djvu,.djv,.png,.jpg,.jpeg,.tiff,.bmp,.webp,.gif" hidden aria-hidden="true">
+        <h2 id="upload-heading">1. Загрузите файлы</h2>
+        <div class="drop-zone" id="dropZone" role="button" tabindex="0" aria-label="Область загрузки файлов. Перетащите файлы сюда или нажмите для выбора">
+          <input type="file" id="fileInput" accept=".pdf,.docx,.txt,.html,.djvu,.djv,.png,.jpg,.jpeg,.tiff,.bmp,.webp,.gif" multiple hidden aria-hidden="true">
           <div class="drop-content">
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
             </svg>
-            <p class="drop-title">Перетащите файл сюда</p>
-            <p class="drop-subtitle">или <button type="button" id="browseBtn">выберите файл</button></p>
-            <p class="hint">Поддерживаемые форматы: PDF, DOCX, TXT, HTML, DJVU, DJV, PNG, JPG, TIFF, BMP, WEBP, GIF</p>
+            <p class="drop-title">Перетащите файлы сюда</p>
+            <p class="drop-subtitle">или <button type="button" id="browseBtn">выберите файлы</button></p>
+            <p class="hint">Можно выбрать несколько файлов: объединить в один PDF или конвертировать по отдельности</p>
             <div class="drop-formats" aria-hidden="true">
               <span class="format-tag">PDF</span>
               <span class="format-tag">DOCX</span>
@@ -91,11 +91,34 @@
           </div>
           <button type="button" id="removeFile" class="btn-ghost" aria-label="Удалить файл">×</button>
         </div>
+
+        <!-- Multi-file list (shown when 2+ files selected) -->
+        <div id="fileListWrap" class="file-list-wrap hidden" aria-live="polite">
+          <div class="file-list-header">
+            <span id="fileListCount" class="file-list-title"></span>
+            <span id="fileListTotal" class="file-list-total"></span>
+            <button type="button" id="clearFilesBtn" class="btn-ghost">Очистить всё</button>
+          </div>
+          <ul id="fileList" class="file-list" role="list" aria-label="Список загруженных файлов (порядок объединения)"></ul>
+        </div>
       </section>
 
       <!-- Format Selection -->
       <section class="card format-section hidden section" id="formatSection" aria-labelledby="format-heading">
         <h2 id="format-heading">2. Выберите формат вывода</h2>
+
+        <!-- Merge controls (multi-file mode) -->
+        <div id="mergeControls" class="merge-controls hidden">
+          <label class="checkbox-label merge-label">
+            <input type="checkbox" id="mergeToPdf" checked>
+            <span>🧩 Объединить все файлы в один PDF</span>
+          </label>
+          <p class="option-hint">Файлы будут объединены в порядке списка. Порядок можно менять кнопками ↑↓.</p>
+        </div>
+        <p id="noCommonFormat" class="option-hint no-common-format hidden">
+          У выбранных файлов нет общих форматов вывода — доступно только объединение в PDF.
+        </p>
+
         <div class="format-grid" id="formatGrid" role="radiogroup" aria-label="Доступные форматы вывода">
           <!-- Formats will be populated dynamically -->
         </div>
@@ -234,6 +257,8 @@
           </button>
           <button type="button" id="convertAnotherBtn" class="btn btn-secondary btn-large">Конвертировать другой файл</button>
         </div>
+        <!-- Per-file results for batch mode -->
+        <div id="resultFiles" class="result-files hidden" aria-live="polite"></div>
       </section>
 
       <!-- Error Section -->
@@ -249,6 +274,6 @@
     </footer>
   </div>
 
-  <script src="/static/app.js?v=4"></script>
+  <script src="/static/app.js?v=5"></script>
 </body>
 </html>

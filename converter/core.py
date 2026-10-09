@@ -1,11 +1,13 @@
 """Core document conversion logic."""
 
 import os
+import dataclasses
 import tempfile
 import shutil
+import uuid
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable
 from enum import Enum
 import logging
 
@@ -112,12 +114,12 @@ class DocumentConverter:
         InputFormat.HTML.value: [OutputFormat.PDF.value, OutputFormat.DOCX.value, OutputFormat.TXT.value, OutputFormat.PNG.value, OutputFormat.JPEG.value],
         InputFormat.DJVU.value: [OutputFormat.PDF.value, OutputFormat.PNG.value, OutputFormat.JPEG.value, OutputFormat.TIFF.value, OutputFormat.TXT.value],
         InputFormat.DJV.value: [OutputFormat.PDF.value, OutputFormat.PNG.value, OutputFormat.JPEG.value, OutputFormat.TIFF.value, OutputFormat.TXT.value],
-        InputFormat.PNG.value: [OutputFormat.PDF.value, OutputFormat.DOCX.value, OutputFormat.JPEG.value, OutputFormat.TIFF.value, OutputFormat.BMP.value, OutputFormat.WEBP.value],
-        InputFormat.JPEG.value: [OutputFormat.PDF.value, OutputFormat.DOCX.value, OutputFormat.PNG.value, OutputFormat.TIFF.value, OutputFormat.BMP.value, OutputFormat.WEBP.value],
-        InputFormat.JPG.value: [OutputFormat.PDF.value, OutputFormat.DOCX.value, OutputFormat.PNG.value, OutputFormat.TIFF.value, OutputFormat.BMP.value, OutputFormat.WEBP.value],
-        InputFormat.TIFF.value: [OutputFormat.PDF.value, OutputFormat.PNG.value, OutputFormat.JPEG.value, OutputFormat.BMP.value, OutputFormat.WEBP.value],
-        InputFormat.BMP.value: [OutputFormat.PDF.value, OutputFormat.PNG.value, OutputFormat.JPEG.value, OutputFormat.TIFF.value, OutputFormat.WEBP.value],
-        InputFormat.WEBP.value: [OutputFormat.PDF.value, OutputFormat.PNG.value, OutputFormat.JPEG.value, OutputFormat.TIFF.value, OutputFormat.BMP.value],
+        InputFormat.PNG.value: [OutputFormat.PDF.value, OutputFormat.DOCX.value, OutputFormat.PNG.value, OutputFormat.JPEG.value, OutputFormat.TIFF.value, OutputFormat.BMP.value, OutputFormat.WEBP.value],
+        InputFormat.JPEG.value: [OutputFormat.PDF.value, OutputFormat.DOCX.value, OutputFormat.PNG.value, OutputFormat.JPEG.value, OutputFormat.TIFF.value, OutputFormat.BMP.value, OutputFormat.WEBP.value],
+        InputFormat.JPG.value: [OutputFormat.PDF.value, OutputFormat.DOCX.value, OutputFormat.PNG.value, OutputFormat.JPEG.value, OutputFormat.TIFF.value, OutputFormat.BMP.value, OutputFormat.WEBP.value],
+        InputFormat.TIFF.value: [OutputFormat.PDF.value, OutputFormat.PNG.value, OutputFormat.JPEG.value, OutputFormat.TIFF.value, OutputFormat.BMP.value, OutputFormat.WEBP.value],
+        InputFormat.BMP.value: [OutputFormat.PDF.value, OutputFormat.PNG.value, OutputFormat.JPEG.value, OutputFormat.TIFF.value, OutputFormat.BMP.value, OutputFormat.WEBP.value],
+        InputFormat.WEBP.value: [OutputFormat.PDF.value, OutputFormat.PNG.value, OutputFormat.JPEG.value, OutputFormat.TIFF.value, OutputFormat.BMP.value, OutputFormat.WEBP.value],
         InputFormat.GIF.value: [OutputFormat.PDF.value, OutputFormat.PNG.value, OutputFormat.JPEG.value, OutputFormat.TIFF.value, OutputFormat.BMP.value, OutputFormat.WEBP.value],
     }
 
@@ -296,6 +298,147 @@ class DocumentConverter:
         for path in input_paths:
             results.append(self.convert(path, output_format, options))
         return results
+
+    def merge_to_pdf(
+        self,
+        input_paths: List[str],
+        options: Optional[ConversionOptions] = None,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None
+    ) -> ConversionResult:
+        """Merge multiple documents into a single PDF.
+
+        Every input file is first converted to PDF (native PDFs are used
+        as-is); the resulting PDFs are then concatenated in the given
+        order. If any file cannot be converted, the whole merge fails
+        with an error naming that file (all-or-nothing semantics: a
+        silently incomplete merged document would be worse).
+
+        Notes:
+            - ``page_range`` is NOT applied during merge (a partial page
+              set inside a merged document would be confusing); the
+              option is stripped for intermediate conversions.
+            - ``pdf_compression`` applies to the final merged PDF.
+
+        Args:
+            input_paths: Paths to input files, in merge order.
+            options: Conversion options.
+            progress_callback: Optional callable(done, total, message)
+                reporting per-file progress.
+
+        Returns:
+            ConversionResult with the merged PDF path and page count.
+        """
+        from .libraries import get_libraries
+
+        fitz = get_libraries().get_fitz()
+        if not fitz:
+            return ConversionResult(
+                success=False,
+                error="PyMuPDF (fitz) not installed, cannot merge"
+            )
+
+        if not input_paths:
+            return ConversionResult(success=False, error="No files provided for merge")
+
+        options = options or ConversionOptions()
+        total = len(input_paths)
+        total_input_size = 0
+        pdf_parts: List[str] = []
+
+        def _progress(done: int, message: str):
+            if progress_callback:
+                try:
+                    progress_callback(done, total, message)
+                except Exception:
+                    pass
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="doc_converter_merge_") as work_dir:
+                # Stage 1: bring every input to PDF form
+                for idx, path in enumerate(input_paths):
+                    src = Path(path)
+                    _progress(idx, f"Обработка файла {idx + 1}/{total}: {src.name}")
+
+                    if not src.exists():
+                        return ConversionResult(
+                            success=False,
+                            error=f"Input file not found: {src.name}"
+                        )
+                    total_input_size += src.stat().st_size
+                    ext = src.suffix.lower().lstrip('.')
+
+                    if ext == 'pdf':
+                        pdf_parts.append(str(src))
+                        continue
+
+                    if not self.can_convert(ext, 'pdf'):
+                        return ConversionResult(
+                            success=False,
+                            error=f"Cannot merge '{src.name}': .{ext} cannot be converted to PDF"
+                        )
+
+                    stage_options = dataclasses.replace(
+                        options,
+                        output_dir=work_dir,
+                        output_filename=f"merge_stage_{idx:03d}",
+                        page_range=None,
+                    )
+                    stage = self.convert(str(src), 'pdf', stage_options)
+                    if not stage.success or not stage.output_path:
+                        return ConversionResult(
+                            success=False,
+                            error=f"Failed to convert '{src.name}' to PDF: {stage.error}"
+                        )
+                    pdf_parts.append(stage.output_path)
+
+                # Stage 2: concatenate
+                _progress(total, "Объединение страниц...")
+
+                merged = fitz.open()
+                try:
+                    for part_path in pdf_parts:
+                        with fitz.open(part_path) as part:
+                            if part.page_count > 0:
+                                merged.insert_pdf(part)
+
+                    if merged.page_count == 0:
+                        return ConversionResult(
+                            success=False,
+                            error="Merge produced no pages: all input documents are empty"
+                        )
+
+                    if options.output_dir:
+                        output_dir = Path(options.output_dir)
+                    else:
+                        output_dir = Path(tempfile.gettempdir()) / "doc_converter"
+                    output_dir.mkdir(parents=True, exist_ok=True)
+
+                    output_name = options.output_filename or f"merged_{uuid.uuid4().hex[:8]}"
+                    output_path = output_dir / f"{output_name}.pdf"
+
+                    if options.pdf_compression == "high":
+                        merged.save(str(output_path), garbage=4, deflate=True, clean=True)
+                    elif options.pdf_compression == "medium":
+                        merged.save(str(output_path), garbage=3, deflate=True, clean=True)
+                    else:  # low
+                        merged.save(str(output_path), garbage=1, deflate=True)
+
+                    pages = merged.page_count
+                finally:
+                    merged.close()
+
+            return ConversionResult(
+                success=True,
+                output_path=str(output_path),
+                output_size=Path(output_path).stat().st_size,
+                input_size=total_input_size,
+                pages_processed=pages,
+                format='pdf',
+                options_used=options
+            )
+        except Exception as e:
+            logger.exception(f"Merge failed: {e}")
+            return ConversionResult(success=False, error=f"Merge failed: {e}")
 
     def estimate_output_size(
         self,

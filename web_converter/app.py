@@ -7,8 +7,10 @@ import tempfile
 import shutil
 import time
 import logging
+import zipfile
+import dataclasses
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Tuple
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 import json
@@ -37,8 +39,9 @@ class AppConfig:
     port: int = 8080
     
     # File limits
-    max_file_size: int = 100 * 1024 * 1024  # 100 MB
+    max_file_size: int = 100 * 1024 * 1024  # 100 MB (per file AND total upload)
     max_concurrent_conversions: int = 2  # Limit concurrent conversions
+    max_files_per_request: int = 20  # Max files in one merge/batch request
     
     # Timeouts
     conversion_timeout: int = 300  # 5 minutes per conversion
@@ -165,6 +168,30 @@ conversion_semaphore = asyncio.Semaphore(config.max_concurrent_conversions)
 from concurrent.futures import ThreadPoolExecutor
 thread_pool = ThreadPoolExecutor(max_workers=config.thread_pool_workers)
 
+_thread_pool_shutdown = False
+
+
+def get_thread_pool() -> ThreadPoolExecutor:
+    """Return the shared thread pool, re-creating it if it was shut down.
+
+    The pool is module-global and shared by ALL application instances:
+    a lifespan shutdown of one instance (e.g. a TestServer in the test
+    suite or repeated create_app() calls) must not kill conversions for
+    the remaining ones.
+    """
+    global thread_pool, _thread_pool_shutdown
+    if _thread_pool_shutdown:
+        thread_pool = ThreadPoolExecutor(max_workers=config.thread_pool_workers)
+        _thread_pool_shutdown = False
+    return thread_pool
+
+
+def shutdown_thread_pool():
+    """Shut down the shared thread pool (idempotent)."""
+    global _thread_pool_shutdown
+    thread_pool.shutdown(wait=True, cancel_futures=True)
+    _thread_pool_shutdown = True
+
 # ============================================================================
 # Progress Tracking
 # ============================================================================
@@ -249,6 +276,8 @@ def setup_routes(app: web.Application):
     app.router.add_get('/', index_handler)
     app.router.add_get('/api/formats', formats_handler)
     app.router.add_post('/api/convert', convert_handler)
+    app.router.add_post('/api/merge', merge_handler)
+    app.router.add_post('/api/batch', batch_handler)
     app.router.add_get('/api/convert/progress/{task_id}', progress_sse_handler)
     app.router.add_post('/api/estimate', estimate_handler)
     app.router.add_get('/download/{filename}', download_handler)
@@ -365,6 +394,7 @@ async def convert_handler(request: Request) -> Response:
     # Check concurrency limit
     if conversion_semaphore.locked():
         return web.json_response({
+            "success": False,
             "error": "Server busy: maximum concurrent conversions reached. Please try again later."
         }, status=503, headers={"Retry-After": "30"})
     
@@ -381,6 +411,7 @@ async def _convert_with_semaphore(request: Request) -> Response:
         content_length = request.headers.get('Content-Length')
         if content_length and int(content_length) > config.max_file_size:
             return web.json_response({
+                "success": False,
                 "error": f"File too large. Maximum size: {config.max_file_size // (1024*1024)} MB"
             }, status=413)
         
@@ -398,13 +429,13 @@ async def _convert_with_semaphore(request: Request) -> Response:
             if field.name == 'file':
                 file_filename = field.filename
                 if not file_filename:
-                    return web.json_response({"error": "No file selected"}, status=400)
+                    return web.json_response({"success": False, "error": "No file selected"}, status=400)
                 
                 # Validate extension early
                 input_ext = Path(file_filename).suffix.lower().lstrip('.')
                 if input_ext not in converter.get_supported_input_formats():
                     return web.json_response(
-                        {"error": f"Unsupported input format: {input_ext}"},
+                        {"success": False, "error": f"Unsupported input format: {input_ext}"},
                         status=400
                     )
                 
@@ -422,6 +453,7 @@ async def _convert_with_semaphore(request: Request) -> Response:
                             f.close()
                             temp_input_path.unlink(missing_ok=True)
                             return web.json_response({
+                                "success": False,
                                 "error": f"File too large. Maximum: {config.max_file_size // (1024*1024)} MB"
                             }, status=413)
                         f.write(chunk)
@@ -432,32 +464,22 @@ async def _convert_with_semaphore(request: Request) -> Response:
                 options_data = json.loads(await field.text())
         
         if not file_filename:
-            return web.json_response({"error": "No file uploaded"}, status=400)
+            return web.json_response({"success": False, "error": "No file uploaded"}, status=400)
         
         if not output_format:
-            return web.json_response({"error": "No output format specified"}, status=400)
+            return web.json_response({"success": False, "error": "No output format specified"}, status=400)
         
         # Validate conversion
         input_ext = Path(file_filename).suffix.lower().lstrip('.')
         if not converter.can_convert(input_ext, output_format):
             temp_input_path.unlink(missing_ok=True)
             return web.json_response(
-                {"error": f"Cannot convert {input_ext} to {output_format}"},
+                {"success": False, "error": f"Cannot convert {input_ext} to {output_format}"},
                 status=400
             )
         
         # Parse options
-        options = ConversionOptions(
-            quality=options_data.get('quality', 85),
-            dpi=options_data.get('dpi', 150),
-            pdf_compression=options_data.get('pdf_compression', 'medium'),
-            resize_factor=options_data.get('resize_factor', 1.0),
-            djvu_quality=options_data.get('djvu_quality', 50),
-            page_range=options_data.get('page_range'),
-            grayscale=options_data.get('grayscale', False),
-            strip_metadata=options_data.get('strip_metadata', True),
-            output_dir=str(temp_manager.output_dir),
-        )
+        options = _build_conversion_options(options_data, str(temp_manager.output_dir))
         
         # Create task for progress tracking
         task = create_task(file_filename, output_format)
@@ -465,19 +487,6 @@ async def _convert_with_semaphore(request: Request) -> Response:
         
         # Update progress: upload complete
         update_task_progress(task_id, 10.0, "File uploaded, starting conversion...", "converting")
-        
-        # Parse options
-        options = ConversionOptions(
-            quality=options_data.get('quality', 85),
-            dpi=options_data.get('dpi', 150),
-            pdf_compression=options_data.get('pdf_compression', 'medium'),
-            resize_factor=options_data.get('resize_factor', 1.0),
-            djvu_quality=options_data.get('djvu_quality', 50),
-            page_range=options_data.get('page_range'),
-            grayscale=options_data.get('grayscale', False),
-            strip_metadata=options_data.get('strip_metadata', True),
-            output_dir=str(temp_manager.output_dir),
-        )
         
         # Run conversion in thread pool with timeout
         loop = asyncio.get_event_loop()
@@ -494,13 +503,14 @@ async def _convert_with_semaphore(request: Request) -> Response:
                 return result
             
             result = await asyncio.wait_for(
-                loop.run_in_executor(thread_pool, conversion_with_progress),
+                loop.run_in_executor(get_thread_pool(), conversion_with_progress),
                 timeout=config.conversion_timeout
             )
         except asyncio.TimeoutError:
             logger.warning(f"Conversion timeout for {file_filename} -> {output_format}")
             complete_task(task_id, error=f"Conversion timed out ({config.conversion_timeout}s limit)")
             return web.json_response({
+                "success": False,
                 "error": f"Conversion timed out ({config.conversion_timeout}s limit)",
                 "task_id": task_id
             }, status=504)
@@ -548,6 +558,385 @@ async def _convert_with_semaphore(request: Request) -> Response:
         if 'task_id' in locals():
             complete_task(task_id, error=str(e))
         return web.json_response({"error": str(e)}, status=500)
+
+
+# ============================================================================
+# Multi-file operations: merge to PDF / batch conversion
+# ============================================================================
+
+class _ApiError(Exception):
+    """Internal error carrying an HTTP status and a JSON payload."""
+
+    def __init__(self, status: int, payload: dict):
+        super().__init__(payload.get("error", ""))
+        self.status = status
+        self.payload = payload
+
+
+def _build_conversion_options(options_data: dict, output_dir: Optional[str] = None) -> ConversionOptions:
+    """Build ConversionOptions from the JSON payload sent by the frontend."""
+    return ConversionOptions(
+        quality=options_data.get('quality', 85),
+        dpi=options_data.get('dpi', 150),
+        pdf_compression=options_data.get('pdf_compression', 'medium'),
+        resize_factor=options_data.get('resize_factor', 1.0),
+        djvu_quality=options_data.get('djvu_quality', 50),
+        page_range=options_data.get('page_range'),
+        grayscale=options_data.get('grayscale', False),
+        strip_metadata=options_data.get('strip_metadata', True),
+        output_dir=output_dir,
+    )
+
+
+async def _collect_uploaded_files(request: Request) -> Tuple[List[dict], Optional[str], dict]:
+    """Stream a multipart request with multiple 'files' fields into temp dir.
+
+    Enforces per-file and total upload size limits and the file count
+    limit. Duplicate filenames are de-duplicated (a.pdf, a_1.pdf, ...)
+    so nothing overwrites anything else.
+
+    Returns:
+        (files, output_format, options_data) where files is a list of
+        {name, stored_name, path, size} in upload order.
+    """
+    reader = await request.multipart()
+
+    files: List[dict] = []
+    options_data: dict = {}
+    output_format: Optional[str] = None
+    used_names = set()
+    total_size = 0
+    current_path: Optional[Path] = None
+
+    content_length = request.headers.get('Content-Length')
+    if content_length and int(content_length) > config.max_file_size:
+        raise _ApiError(413, {
+            "success": False,
+            "error": f"Upload too large. Maximum total size: {config.max_file_size // (1024*1024)} MB"
+        })
+
+    def _cleanup():
+        for finfo in files:
+            Path(finfo["path"]).unlink(missing_ok=True)
+        if current_path:
+            current_path.unlink(missing_ok=True)
+
+    try:
+        async for field in reader:
+            if field.name in ('files', 'file'):
+                filename = field.filename
+                if not filename:
+                    raise _ApiError(400, {"success": False, "error": "One of the uploaded files has no name"})
+                if len(files) >= config.max_files_per_request:
+                    raise _ApiError(400, {
+                        "success": False,
+                        "error": f"Too many files. Maximum: {config.max_files_per_request} per request"
+                    })
+                input_ext = Path(filename).suffix.lower().lstrip('.')
+                if input_ext not in converter.get_supported_input_formats():
+                    raise _ApiError(400, {
+                        "success": False,
+                        "error": f"Unsupported input format: .{input_ext} ({filename})"
+                    })
+
+                # De-duplicate the on-disk name
+                stem = Path(filename).stem
+                suffix = Path(filename).suffix
+                stored_name = filename
+                n = 1
+                while stored_name in used_names:
+                    stored_name = f"{stem}_{n}{suffix}"
+                    n += 1
+                used_names.add(stored_name)
+
+                current_path = temp_manager.upload_dir / stored_name
+                file_size = 0
+                with open(current_path, 'wb') as f:
+                    while True:
+                        chunk = await field.read_chunk(8192)
+                        if not chunk:
+                            break
+                        file_size += len(chunk)
+                        if file_size > config.max_file_size:
+                            raise _ApiError(413, {
+                                "success": False,
+                                "error": f"File too large: {filename}. Maximum: {config.max_file_size // (1024*1024)} MB"
+                            })
+                        total_size += len(chunk)
+                        if total_size > config.max_file_size:
+                            raise _ApiError(413, {
+                                "success": False,
+                                "error": f"Total upload too large. Maximum: {config.max_file_size // (1024*1024)} MB"
+                            })
+                        f.write(chunk)
+
+                files.append({
+                    "name": filename,
+                    "stored_name": stored_name,
+                    "path": current_path,
+                    "size": file_size,
+                })
+                current_path = None
+
+            elif field.name == 'output_format':
+                output_format = await field.text()
+            elif field.name == 'options':
+                options_data = json.loads(await field.text())
+    except _ApiError:
+        _cleanup()
+        raise
+    except Exception as e:
+        _cleanup()
+        raise
+
+    return files, output_format, options_data
+
+
+async def merge_handler(request: Request) -> Response:
+    """Merge multiple uploaded documents into a single PDF (in upload order)."""
+    if conversion_semaphore.locked():
+        return web.json_response({
+            "success": False,
+            "error": "Server busy: maximum concurrent conversions reached. Please try again later."
+        }, status=503, headers={"Retry-After": "30"})
+
+    async with conversion_semaphore:
+        return await _merge_with_semaphore(request)
+
+
+async def _merge_with_semaphore(request: Request) -> Response:
+    """Merge handler body with the semaphore already acquired."""
+    temp_paths: List[Path] = []
+    task_id = None
+    try:
+        try:
+            files, _, options_data = await _collect_uploaded_files(request)
+        except _ApiError as e:
+            return web.json_response(e.payload, status=e.status)
+
+        if len(files) < 2:
+            return web.json_response({
+                "success": False,
+                "error": "Select at least 2 files to merge"
+            }, status=400)
+
+        temp_paths = [f["path"] for f in files]
+        total_input = sum(f["size"] for f in files)
+        options = _build_conversion_options(options_data, str(temp_manager.output_dir))
+
+        task = create_task(f"{len(files)} файлов → PDF", "pdf")
+        task_id = task.task_id
+        update_task_progress(task_id, 10.0, f"Подготовка к объединению {len(files)} файлов...", "converting")
+
+        loop = asyncio.get_event_loop()
+
+        def merge_with_progress():
+            def on_progress(done, total, message):
+                percent = 15.0 + 75.0 * (done / total) if total else 50.0
+                update_task_progress(task_id, min(percent, 90.0), message, "converting")
+            return converter.merge_to_pdf(
+                [str(p) for p in temp_paths], options, on_progress
+            )
+
+        try:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(get_thread_pool(), merge_with_progress),
+                timeout=config.conversion_timeout
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"Merge timed out for {len(files)} files")
+            complete_task(task_id, error=f"Merge timed out ({config.conversion_timeout}s limit)")
+            return web.json_response({
+                "success": False,
+                "error": f"Merge timed out ({config.conversion_timeout}s limit)",
+                "task_id": task_id
+            }, status=504)
+
+        if result.success:
+            payload = {
+                "filename": Path(result.output_path).name,
+                "output_size": result.output_size,
+                "input_size": total_input,
+                "compression_ratio": round(result.output_size / total_input, 2) if total_input > 0 else 0,
+                "format": "pdf",
+                "merged_count": len(files),
+                "pages": result.pages_processed,
+                "download_url": f"/download/{Path(result.output_path).name}"
+            }
+            complete_task(task_id, payload)
+            return web.json_response({"success": True, "task_id": task_id, **payload})
+        else:
+            complete_task(task_id, error=result.error)
+            return web.json_response({
+                "success": False,
+                "error": result.error,
+                "task_id": task_id
+            }, status=500)
+
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.exception(f"Merge error: {e}")
+        if task_id:
+            complete_task(task_id, error=str(e))
+        return web.json_response({"success": False, "error": str(e)}, status=500)
+    finally:
+        # Inputs are consumed by the merge; the merged PDF lives in output_dir
+        for p in temp_paths:
+            Path(p).unlink(missing_ok=True)
+
+
+async def batch_handler(request: Request) -> Response:
+    """Convert multiple uploaded files, each independently to the same format."""
+    if conversion_semaphore.locked():
+        return web.json_response({
+            "success": False,
+            "error": "Server busy: maximum concurrent conversions reached. Please try again later."
+        }, status=503, headers={"Retry-After": "30"})
+
+    async with conversion_semaphore:
+        return await _batch_with_semaphore(request)
+
+
+async def _batch_with_semaphore(request: Request) -> Response:
+    """Batch handler body with the semaphore already acquired."""
+    temp_paths: List[Path] = []
+    task_id = None
+    try:
+        try:
+            files, output_format, options_data = await _collect_uploaded_files(request)
+        except _ApiError as e:
+            return web.json_response(e.payload, status=e.status)
+
+        if not files:
+            return web.json_response({"success": False, "error": "No files uploaded"}, status=400)
+        if not output_format:
+            return web.json_response({"success": False, "error": "No output format specified"}, status=400)
+
+        output_format = output_format.lower()
+        temp_paths = [f["path"] for f in files]
+        total_input = sum(f["size"] for f in files)
+        options_base = _build_conversion_options(options_data, str(temp_manager.output_dir))
+
+        task = create_task(f"{len(files)} файлов", output_format)
+        task_id = task.task_id
+        update_task_progress(task_id, 5.0, f"Обработка {len(files)} файлов...", "converting")
+
+        loop = asyncio.get_event_loop()
+
+        def batch_with_progress():
+            results = []
+            used_outputs = set()
+            success_count = 0
+
+            for idx, finfo in enumerate(files):
+                update_task_progress(
+                    task_id,
+                    10.0 + 80.0 * idx / len(files),
+                    f"Конвертация {idx + 1}/{len(files)}: {finfo['name']}",
+                    "converting"
+                )
+                ext = Path(finfo['name']).suffix.lower().lstrip('.')
+                if not converter.can_convert(ext, output_format):
+                    results.append({
+                        "filename": finfo["name"],
+                        "success": False,
+                        "error": f"Cannot convert {ext} to {output_format}"
+                    })
+                    continue
+
+                # De-duplicate output names (a.pdf and a.txt both -> a_converted.png)
+                base = Path(finfo['stored_name']).stem
+                candidate = f"{base}_converted"
+                n = 1
+                while candidate in used_outputs:
+                    candidate = f"{base}_converted_{n}"
+                    n += 1
+                used_outputs.add(candidate)
+
+                opts = dataclasses.replace(options_base, output_filename=candidate)
+                res = converter.convert(str(finfo['path']), output_format, opts)
+                if res.success:
+                    success_count += 1
+                    results.append({
+                        "filename": finfo["name"],
+                        "success": True,
+                        "format": res.format,
+                        "output_size": res.output_size,
+                        "input_size": res.input_size,
+                        "output_filename": Path(res.output_path).name,
+                        "download_url": f"/download/{Path(res.output_path).name}"
+                    })
+                else:
+                    results.append({
+                        "filename": finfo["name"],
+                        "success": False,
+                        "error": res.error
+                    })
+
+            batch_zip_url = None
+            if success_count >= 2:
+                zip_name = f"batch_{uuid.uuid4().hex[:8]}.zip"
+                zip_path = Path(temp_manager.output_dir) / zip_name
+                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    for r in results:
+                        if r["success"]:
+                            zf.write(
+                                Path(temp_manager.output_dir) / r["output_filename"],
+                                r["output_filename"]
+                            )
+                batch_zip_url = f"/download/{zip_name}"
+
+            update_task_progress(task_id, 95.0, "Финализация...", "converting")
+            return {
+                "format": output_format,
+                "total": len(files),
+                "converted": success_count,
+                "failed": len(files) - success_count,
+                "input_size": total_input,
+                "files": results,
+                "batch_zip_url": batch_zip_url
+            }
+
+        try:
+            batch_result = await asyncio.wait_for(
+                loop.run_in_executor(get_thread_pool(), batch_with_progress),
+                timeout=config.conversion_timeout * max(1, len(files))
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"Batch conversion timed out for {len(files)} files")
+            complete_task(task_id, error="Batch conversion timed out")
+            return web.json_response({
+                "success": False,
+                "error": f"Batch conversion timed out (limit {config.conversion_timeout}s per file)",
+                "task_id": task_id
+            }, status=504)
+
+        if batch_result["converted"] > 0:
+            complete_task(task_id, batch_result)
+            return web.json_response({"success": True, "task_id": task_id, **batch_result})
+        else:
+            error_msg = "; ".join(
+                r.get("error") or "unknown error" for r in batch_result["files"]
+            ) or "All conversions failed"
+            complete_task(task_id, error=error_msg)
+            return web.json_response({
+                "success": False,
+                "error": error_msg,
+                "task_id": task_id,
+                "files": batch_result["files"]
+            }, status=500)
+
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.exception(f"Batch error: {e}")
+        if task_id:
+            complete_task(task_id, error=str(e))
+        return web.json_response({"success": False, "error": str(e)}, status=500)
+    finally:
+        for p in temp_paths:
+            Path(p).unlink(missing_ok=True)
 
 
 async def estimate_handler(request: Request) -> Response:
@@ -777,7 +1166,7 @@ async def app_lifespan(app: web.Application):
         await asyncio.sleep(0.5)
     
     # Shutdown thread pool
-    thread_pool.shutdown(wait=True, cancel_futures=True)
+    shutdown_thread_pool()
     
     # Stop temp file manager
     await temp_manager.stop()
@@ -791,6 +1180,20 @@ async def create_app() -> web.Application:
     
     # Setup lifespan
     app.cleanup_ctx.append(app_lifespan)
+    
+    # Setup Jinja2
+    aiohttp_jinja2.setup(
+        app,
+        loader=jinja2.FileSystemLoader(str(Path(__file__).parent / 'templates'))
+    )
+    
+    setup_routes(app)
+    return app
+
+
+def create_test_app() -> web.Application:
+    """Create a test application without lifespan (for tests)."""
+    app = web.Application()
     
     # Setup Jinja2
     aiohttp_jinja2.setup(

@@ -1,11 +1,12 @@
 """Document Converter Package"""
 
-from .core import DocumentConverter, ConversionOptions, OutputFormat, InputFormat
+from .core import DocumentConverter, ConversionOptions, ConversionResult, OutputFormat, InputFormat
 from .libraries import get_libraries, LibraryManager
 
 __all__ = [
     "DocumentConverter", 
     "ConversionOptions", 
+    "ConversionResult", 
     "OutputFormat", 
     "InputFormat",
     "get_libraries",
